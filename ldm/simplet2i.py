@@ -374,6 +374,11 @@ class T2I:
                         # i.e. we specified particular variations
                         x_T = initial_noise
                     else:
+
+                        # stable seed experiment
+                        if True:
+                            x_T = self._stable_seed(seed, width, height)
+
                         seed_everything(seed)
                         if self.device.type == 'mps':
                             x_T = self._get_noise(init_latent,width,height)
@@ -626,6 +631,50 @@ class T2I:
                                     height // self.downsampling_factor,
                                     width  // self.downsampling_factor],
                                    device=self.device)
+
+    def _stable_seed(self, seed, width, height):
+        # number of blocks horizontally and vertically
+        # add/subtract 1 to the seed to shift over x-axis by 1 block
+        # add/subtract the value below to the seed to shift over y-axis by 1 block
+        seed_plane_width = 1_000_000
+        seed_plane_height = np.iinfo(np.uint32).max // seed_plane_width
+
+        def get_block_position(block):
+            x = block % seed_plane_width
+            y = block // seed_plane_width
+            return x, y
+
+        def get_block(x, y):
+            return x + seed_plane_width * y
+
+        # image sides below must be divisible by these values without a reminder
+        # bigger values make generations less stable
+        block_width = 1
+        block_height = 1
+
+        blocks_over_x = (width // self.downsampling_factor) // block_width
+        blocks_over_y = (height // self.downsampling_factor) // block_height
+
+        start_x, start_y = get_block_position(seed)
+
+        result = None
+        for nx in range(blocks_over_x):
+            x = (start_x + nx) % seed_plane_width
+
+            y_result = None
+            for ny in range(blocks_over_y):
+                y = (start_y + ny) % seed_plane_height
+
+                block_seed = get_block(x, y)
+                torch.manual_seed(block_seed)
+                block = torch.randn([1, self.latent_channels, block_height, block_width], device=self.device)
+
+                y_result = block if y_result is None else torch.cat([y_result, block], dim=2)
+
+            result = y_result if result is None else torch.cat([result, y_result], dim=3)
+
+        return result
+
 
     def _set_sampler(self):
         msg = f'>> Setting Sampler to {self.sampler_name}'
